@@ -1,7 +1,28 @@
-# 这是一个示例 Python 脚本。
+from torch.utils import data
+import numpy as np
+from PIL import Image
+import pandas as pd
+import os
+from torchvision.io import read_image
 
-# 按 Shift+F10 执行或将其替换为您的代码。
-# 按 双击 Shift 在所有地方搜索类、文件、工具窗口、操作和设置。
+
+class brain_dataset(data.Dataset):
+    def __int__(self, image_dir, transform=None):
+        super().__init__()
+        self.image_dir = image_dir  # 图像目录
+        self.mri_images = pd.read_csv(image_dir)  # 这里还要改 应该是包含所有图像名的文件
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.mri_images)
+
+    def __getitem__(self, index):
+        image_path = os.path.join(self.image_dir + self.mri_images.iloc[index, 0])
+        image = read_image(image_path)
+        if self.transform is not None:
+            image = self.transform(image)  # 对图片进行某些变换
+
+        return image
 
 
 def print_hi(name):
@@ -9,8 +30,5 @@ def print_hi(name):
     print(f'Hi, {name}')  # 按 Ctrl+F8 切换断点。
 
 
-# 按间距中的绿色按钮以运行脚本。
 if __name__ == '__main__':
     print_hi('PyCharm')
-
-# 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助
