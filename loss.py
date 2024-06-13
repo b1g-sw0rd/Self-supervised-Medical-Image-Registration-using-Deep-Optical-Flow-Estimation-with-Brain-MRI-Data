@@ -1,5 +1,7 @@
+import numpy as np
 import torch
 import torch.nn.functional as F
+from monai.data import MetaTensor
 
 alphaval = 0.2
 
@@ -19,8 +21,8 @@ def smoothness_loss(flow):
     h_translated = torch.cat((flow[:, :, :, 1:], torch.zeros(b, c, h, 1, device=flow.device)), dim=-1)
     s_loss = charbonnier(flow - v_translated) + charbonnier(flow - h_translated)
     s_loss = torch.sum(s_loss, dim=1) / 2
-
-    return torch.sum(s_loss)/b
+    result = torch.sum(s_loss)/b
+    return result
 
 
 def charbonnier(x, alpha=0.2, beta=1.0, epsilon=0.001):
@@ -30,22 +32,30 @@ def charbonnier(x, alpha=0.2, beta=1.0, epsilon=0.001):
 
 
 def correlation_loss(fixed, warped):
-    b, _, h, w = warped.size()
+    b, c, h, w = warped.size()
     fixed = F.interpolate(fixed, (h, w), mode='bilinear', align_corners=False)
     vx = warped - torch.mean(warped)
     vy = fixed - torch.mean(fixed)
-    corr = 1/b * torch.sum(vx * vy) / (torch.sqrt(torch.sum(vx ** 2)) * torch.sqrt(torch.sum(vy ** 2)))
-    return 1-corr
+    device = vx.device
+    zero = torch.zeros(b, c, h, w).to(device)
+    if torch.equal(zero, vx) or torch.equal(zero, vy):
+        corr = torch.tensor(1.0).to(device)
+    else:
+        corr = 1/b * torch.sum(vx * vy) / (torch.sqrt(torch.sum(vx ** 2)) * torch.sqrt(torch.sum(vy ** 2)))
+        #print("非0了，corr：", corr)
+    return 1.0-corr
 
-
-def OFEloss(flow, warped, fixed, lamb_da=0.002, gamma=100.0, zeta=150.0):
+def OFEloss(flow, warped, fixed, lamb_da=0.012, gamma=200.0, zeta=60.0):
     p_loss = 0  # photometric_loss initial
     s_loss = 0  # smoothness_loss initial
     c_loss = 0  # correlation_loss initial
     n = len(flow)
     for i in range(n):
         p_loss += photometric_loss(fixed, warped[i])   # 权重问题 参考https://github.com/ily-R/Unsupervised-Optical-Flow/blob/master/utils.py
-        c_loss += correlation_loss(fixed, warped[i])   # 问题： 权重会不会导致过度受一个尺度flow和warped的影响
+        # c_loss += correlation_loss(fixed, warped[i])   # 问题： 权重会不会导致过度受一个尺度flow和warped的影响
+        temp = correlation_loss(fixed, warped[i])
+        #print(temp)
+        c_loss += temp
         s_loss += smoothness_loss(flow[i])
     p_loss = 1/n * gamma * p_loss
     c_loss = 1/n * zeta * c_loss
@@ -64,6 +74,7 @@ if __name__ == '__main__':
     test2 = F.interpolate(test2, (h, w), mode='bilinear', align_corners=False)
     p_loss = charbonnier(test1 - test2)
     print("numel:", torch.sum(p_loss) / test1.numel())
+
 
 
 

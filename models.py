@@ -1,28 +1,39 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import argparse
+import sys
+sys.path.append(r'C:\Users\13660\PycharmProjects\OFE-Reg\flownet2')
+sys.path.append(r'C:\Users\13660\PycharmProjects\OFE-Reg\PWC\models')
+sys.path.append(r'C:\Users\13660\PycharmProjects\OFE-Reg\RAFT\core')
 from utils import crop_like
+import flownet2.models as flownet2
+import RAFT.core.raft as raft
+import PWC.models.PWCNet as pwc
 from torch.nn.init import kaiming_normal_, constant_
 import time
+
 
 # https://github.com/NVIDIA/flownet2-pytorch/blob/master/networks/FlowNetS.py 有batchnorm版本
 def conv(batchNorm, in_planes, out_planes, kernel_size=3, stride=1):
     if batchNorm:
         return nn.Sequential(
-            nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, padding=(kernel_size - 1) // 2, bias=False),
+            nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, padding=(kernel_size - 1) // 2,
+                      bias=False),
             nn.BatchNorm2d(out_planes),
             nn.LeakyReLU(0.1, inplace=True)
         )
     else:
         return nn.Sequential(
-            nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, padding=(kernel_size - 1) // 2, bias=True),
+            nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, padding=(kernel_size - 1) // 2,
+                      bias=True),
             nn.LeakyReLU(0.1, inplace=True)
         )
 
 
-def conv_3d(in_planes, out_planes, kernel_size, stride, padding):
+def conv_3d(in_planes, out_planes, kernel_size, stride):
     return nn.Sequential(
-        nn.Conv3d(in_planes, out_planes, kernel_size, stride, padding),
+        nn.Conv3d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, padding=(kernel_size - 1) // 2),
         nn.ReLU(True)
     )
 
@@ -44,7 +55,7 @@ class flowNetS(nn.Module):
         super(flowNetS, self).__init__()
 
         self.batchNorm = batchNorm
-        self.conv1 = conv(self.batchNorm, 2, 64, kernel_size=7, stride=1)
+        self.conv1 = conv(self.batchNorm, 2, 64, kernel_size=7, stride=2)
         self.conv2 = conv(self.batchNorm, 64, 128, kernel_size=5, stride=2)
         self.conv3 = conv(self.batchNorm, 128, 256, kernel_size=5, stride=2)
         self.conv3_1 = conv(self.batchNorm, 256, 256, kernel_size=3, stride=1)
@@ -53,7 +64,7 @@ class flowNetS(nn.Module):
         self.conv5 = conv(self.batchNorm, 512, 512, 3, 2)
         self.conv5_1 = conv(self.batchNorm, 512, 512, 3, 1)
         self.conv6 = conv(self.batchNorm, 512, 1024, 3, 2)
-        self.conv6_1 = conv(self.batchNorm, 1024, 1024, 3,1)
+        self.conv6_1 = conv(self.batchNorm, 1024, 1024, 3, 1)
 
         self.deconv5 = deconv(1024, 512)
         self.deconv4 = deconv(1026, 256)
@@ -132,21 +143,21 @@ class flowNetS(nn.Module):
 
         if self.training:
             return flow0, flow1, flow2, flow3, flow4, flow5, flow6
-            # return flow0
         else:
-            return flow0
+            return flow0, flow1, flow2, flow3, flow4, flow5, flow6
+            # return flow0
 
 
 class affmodel(nn.Module):
     def __init__(self):
         super(affmodel, self).__init__()
-
-        self.conv1 = conv_3d(2, 16, 7, (2, 2, 1), padding='same')
-        self.conv2 = conv_3d(16, 32, 5, (2, 2, 1), padding='same')
-        self.conv3 = conv_3d(32, 64, 3, 2, padding='same')
-        self.conv4 = conv_3d(64, 128, 3, 2, padding='same')
-        self.conv5 = conv_3d(128, 256, 3, 2, padding='same')
-        self.conv6 = conv_3d(256, 512, 3, 2, padding='same')
+        # 这里padding还有问题
+        self.conv1 = conv_3d(2, 16, 7, (2, 2, 1))
+        self.conv2 = conv_3d(16, 32, 5, (2, 2, 1))
+        self.conv3 = conv_3d(32, 64, 3, 2)
+        self.conv4 = conv_3d(64, 128, 3, 2)
+        self.conv5 = conv_3d(128, 256, 3, 2)
+        self.conv6 = conv_3d(256, 512, 3, 2)
         self.flat = nn.Flatten()
         self.fc = nn.Linear(8 * 8 * 512, 12)
 
@@ -176,12 +187,88 @@ class opticalFlowReg(nn.Module):
     def __init__(self, conv_predictor="flowNetS"):
         super(opticalFlowReg, self).__init__()
         #  加入不同OpticalFlow模型
-        if "light" in conv_predictor:
-            self.predictor = flowNetS()
+        if "flownet2" in conv_predictor:
+            parser = argparse.ArgumentParser()
+
+            parser.add_argument('--start_epoch', type=int, default=1)
+            parser.add_argument('--total_epochs', type=int, default=10000)
+            parser.add_argument('--batch_size', '-b', type=int, default=4, help="Batch size")
+            parser.add_argument('--train_n_batches', type=int, default=-1,
+                                help='Number of min-batches per epoch. If < 0, it will be determined by training_dataloader')
+            parser.add_argument('--crop_size', type=int, nargs='+', default=[256, 256],
+                                help="Spatial dimension to crop training samples for training")
+            parser.add_argument('--gradient_clip', type=float, default=None)
+            parser.add_argument('--schedule_lr_frequency', type=int, default=0,
+                                help='in number of iterations (0 for no schedule)')
+            parser.add_argument('--schedule_lr_fraction', type=float, default=10)
+            parser.add_argument("--rgb_max", type=float, default=255.)
+
+            parser.add_argument('--number_workers', '-nw', '--num_workers', type=int, default=8)
+            parser.add_argument('--number_gpus', '-ng', type=int, default=-1, help='number of GPUs to use')
+            parser.add_argument('--no_cuda', action='store_true')
+
+            parser.add_argument('--seed', type=int, default=1)
+            parser.add_argument('--name', default='run', type=str, help='a name to append to the save directory')
+            parser.add_argument('--save', '-s', default='./work', type=str, help='directory for saving')
+
+            parser.add_argument('--validation_frequency', type=int, default=5, help='validate every n epochs')
+            parser.add_argument('--validation_n_batches', type=int, default=-1)
+            parser.add_argument('--render_validation', action='store_true',
+                                help='run inference (save flows to file) and every validation_frequency epoch')
+
+            parser.add_argument('--inference', action='store_true')
+            parser.add_argument('--inference_visualize', action='store_true',
+                                help="visualize the optical flow during inference")
+            parser.add_argument('--inference_size', type=int, nargs='+', default=[-1, -1],
+                                help='spatial size divisible by 64. default (-1,-1) - largest possible valid size would be used')
+            parser.add_argument('--inference_batch_size', type=int, default=1)
+            parser.add_argument('--inference_n_batches', type=int, default=-1)
+            parser.add_argument('--save_flow', action='store_true', help='save predicted flows to file')
+
+            parser.add_argument('--resume', default='', type=str, metavar='PATH',
+                                help='path to latest checkpoint (default: none)')
+            parser.add_argument('--log_frequency', '--summ_iter', type=int, default=1, help="Log every n batches")
+
+            parser.add_argument('--skip_training', action='store_true')
+            parser.add_argument('--skip_validation', action='store_true')
+
+            parser.add_argument('--fp16', action='store_true',
+                                help='Run model in pseudo-fp16 mode (fp16 storage fp32 math).')
+            parser.add_argument('--fp16_scale', type=float, default=1024.,
+                                help='Loss scaling, positive power of 2 values can improve fp16 convergence.')
+            args = parser.parse_args()
+            self.predictor = flownet2.FlowNet2(args)
+
+        elif "raft" in conv_predictor:
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--name', default='raft', help="name your experiment")
+            parser.add_argument('--stage', help="determines which dataset to use for training")
+            parser.add_argument('--restore_ckpt', help="restore checkpoint")
+            parser.add_argument('--small', action='store_true', help='use small model')
+            parser.add_argument('--validation', type=str, nargs='+')
+
+            parser.add_argument('--lr', type=float, default=0.00002)
+            parser.add_argument('--num_steps', type=int, default=100000)
+            parser.add_argument('--batch_size', type=int, default=6)
+            parser.add_argument('--image_size', type=int, nargs='+', default=[384, 512])
+            parser.add_argument('--gpus', type=int, nargs='+', default=[0, 1])
+            parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
+
+            parser.add_argument('--iters', type=int, default=12)
+            parser.add_argument('--wdecay', type=float, default=.00005)
+            parser.add_argument('--epsilon', type=float, default=1e-8)
+            parser.add_argument('--clip', type=float, default=1.0)
+            parser.add_argument('--dropout', type=float, default=0.0)
+            parser.add_argument('--gamma', type=float, default=0.8, help='exponential weighting')
+            parser.add_argument('--add_noise', action='store_true')
+            args = parser.parse_args()
+            self.predictor = raft.RAFT(args)
+
         elif "pwc" in conv_predictor:
-            self.predictor = flowNetS()
+            self.predictor = pwc.PWCDCNet()
         else:
             self.predictor = flowNetS()
+
 
     def stn(self, flow, frame):
         b, _, h, w = flow.shape
@@ -203,6 +290,15 @@ class opticalFlowReg(nn.Module):
         moving = x[:, 1, :, :]
         moving = torch.unsqueeze(moving, dim=1)
         warped_images = [self.stn(flow, moving) for flow in flow_predictions]
-        # warped_images = self.stn(flow_predictions, moving)
+        #warped_images = self.stn(flow_predictions, moving)
         return flow_predictions, warped_images
 
+
+if __name__ == '__main__':
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    model_test = opticalFlowReg(conv_predictor="pwc")
+    model_test.to(device)
+    test_batch = torch.rand(8, 2, 256, 256).to(device)
+    output = model_test(test_batch)
+
+    print(type(output))
