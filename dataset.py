@@ -79,6 +79,7 @@ class brain_dataset(data.Dataset):
 
 
 def volume2slices_ds(data_dir, batch_size, val_frac=0.1, test_frac=0.1):
+    n_workers = 0
     img_list = sorted(glob(os.path.join(data_dir, '*.img')))
     img_dict = [{'image': image} for image in img_list]
     img_dict = img_dict[:10]  # 用于测试前n个vol
@@ -105,13 +106,13 @@ def volume2slices_ds(data_dir, batch_size, val_frac=0.1, test_frac=0.1):
             LoadImaged(keys='image', reader="NibabelReader", image_only=True),  # 做分类，这里image需要加载
             Transposed('image', [3, 1, 0, 2]),
             SpatialCropd(keys="image", roi_start=(119,0,0), roi_end=(179,256,128)), # 截取中间脑部组织 179-119=60层
-            ScaleIntensityd('image')
+            ScaleIntensityd(keys='image',minv=0.0, maxv=1.0)
         ]
     )
 
-    train_vol_ds = monai.data.CacheDataset(data=train_vol, transform=transform_vol, num_workers=6)
-    val_vol_ds = monai.data.CacheDataset(data=val_vol, transform=transform_vol, num_workers=6)
-    test_vol_ds = monai.data.CacheDataset(data=test_vol, transform=transform_vol, num_workers=6)
+    train_vol_ds = monai.data.CacheDataset(data=train_vol, transform=transform_vol, num_workers=n_workers)
+    val_vol_ds = monai.data.CacheDataset(data=val_vol, transform=transform_vol, num_workers=n_workers)
+    test_vol_ds = monai.data.CacheDataset(data=test_vol, transform=transform_vol, num_workers=n_workers)
 
     patch_func = monai.data.PatchIterd(
         keys=["image"],
@@ -124,7 +125,7 @@ def volume2slices_ds(data_dir, batch_size, val_frac=0.1, test_frac=0.1):
             SqueezeDimd(keys=["image"], dim=0),  # squeeze the last dim
             Resized(keys=["image"], spatial_size=[256, 256], mode="bilinear"),
             CopyItemsd(keys="image", times=1, names=["image_t"]),
-            Rand2DElasticd(keys="image_t", prob=1, spacing=(64,64), magnitude_range=(0,1),
+            Rand2DElasticd(keys="image_t", prob=1, spacing=(16,16), magnitude_range=(0,1),
                            padding_mode="zeros", mode="bilinear"),  # 参数需要设置
             ConcatItemsd(keys=["image", "image_t"], name="image_c", dim=0),
             DeleteItemsd(keys=["image", "image_t"])
@@ -137,9 +138,9 @@ def volume2slices_ds(data_dir, batch_size, val_frac=0.1, test_frac=0.1):
     test_patch_ds = monai.data.GridPatchDataset(data=test_vol_ds, patch_iter=patch_func, transform=patch_transform,
                                            with_coordinates=False)
 
-    train_loader = DataLoader(train_patch_ds, batch_size=batch_size, num_workers=6, pin_memory=True)
-    val_loader = DataLoader(val_patch_ds, batch_size=batch_size, num_workers=6, pin_memory=True)
-    test_loader = DataLoader(test_patch_ds, batch_size=batch_size, num_workers=6, pin_memory=True)
+    train_loader = DataLoader(train_patch_ds, batch_size=batch_size, num_workers=n_workers, pin_memory=True)
+    val_loader = DataLoader(val_patch_ds, batch_size=batch_size, num_workers=n_workers, pin_memory=True)
+    test_loader = DataLoader(test_patch_ds, batch_size=batch_size, num_workers=n_workers, pin_memory=True)
 
     return train_loader, val_loader, test_loader, train_patch_ds_len, val_patch_ds_len
 
@@ -155,10 +156,11 @@ if __name__ == '__main__':
 
     check_data = monai.utils.misc.first(train_generator)
     print("first batch's shape: ", check_data["image_c"].shape)
+    ma = torch.max(check_data["image_c"])
     print(train_length)
 
     # 查看切片
-    s = 10
+    s = 20
     image1 = check_data["image_c"]
     plt.figure("visualize", (8, 8))
     plt.subplot(1,2,1)

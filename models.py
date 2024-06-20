@@ -12,6 +12,7 @@ import RAFT.core.raft as raft
 import PWC.models.PWCNet as pwc
 from torch.nn.init import kaiming_normal_, constant_
 import time
+device = torch.device('cuda')
 
 
 # https://github.com/NVIDIA/flownet2-pytorch/blob/master/networks/FlowNetS.py 有batchnorm版本
@@ -188,6 +189,7 @@ class opticalFlowReg(nn.Module):
         super(opticalFlowReg, self).__init__()
         #  加入不同OpticalFlow模型
         if "flownet2" in conv_predictor:
+            print('Using FlowNet2')
             parser = argparse.ArgumentParser()
 
             parser.add_argument('--start_epoch', type=int, default=1)
@@ -240,6 +242,7 @@ class opticalFlowReg(nn.Module):
             self.predictor = flownet2.FlowNet2(args)
 
         elif "raft" in conv_predictor:
+            print('Using RAFT')
             parser = argparse.ArgumentParser()
             parser.add_argument('--name', default='raft', help="name your experiment")
             parser.add_argument('--stage', help="determines which dataset to use for training")
@@ -265,8 +268,14 @@ class opticalFlowReg(nn.Module):
             self.predictor = raft.RAFT(args)
 
         elif "pwc" in conv_predictor:
-            self.predictor = pwc.PWCDCNet()
+            print('Using PWC-Net')
+            self.predictor = pwc.PWCDCNet(md=4)
+            # 三通道flyingchairs预训练权重改单通道
+            pt = torch.load(r"C:\Users\13660\PycharmProjects\OFE-Reg\PWC\pwc_net_chairs.pth.tar", map_location=device)
+            pt['conv1a.0.weight'] = pt['conv1a.0.weight'].sum(1, keepdim=True)  # 改为单通道
+            self.predictor.load_state_dict(pt, strict=False)  # 加载预训练权重
         else:
+            print('Using FlowNetS')
             self.predictor = flowNetS()
 
 

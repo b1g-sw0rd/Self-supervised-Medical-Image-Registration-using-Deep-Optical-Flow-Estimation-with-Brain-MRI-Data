@@ -45,17 +45,16 @@ def correlation_loss(fixed, warped):
         #print("非0了，corr：", corr)
     return 1.0-corr
 
-def OFEloss(flow, warped, fixed, lamb_da=0.012, gamma=200.0, zeta=60.0):
+def OFEloss(flow, warped, fixed, lamb_da=0.005, gamma=1000.0, zeta=1000.0):
     p_loss = 0  # photometric_loss initial
     s_loss = 0  # smoothness_loss initial
     c_loss = 0  # correlation_loss initial
     n = len(flow)
-    for i in range(n):
+    for i in range(1):
         p_loss += photometric_loss(fixed, warped[i])   # 权重问题 参考https://github.com/ily-R/Unsupervised-Optical-Flow/blob/master/utils.py
-        # c_loss += correlation_loss(fixed, warped[i])   # 问题： 权重会不会导致过度受一个尺度flow和warped的影响
-        temp = correlation_loss(fixed, warped[i])
-        #print(temp)
-        c_loss += temp
+        c_loss += correlation_loss(fixed, warped[i])   # 问题： 权重会不会导致过度受一个尺度flow和warped的影响
+        # temp = correlation_loss(fixed, warped[i])
+        # c_loss += temp
         s_loss += smoothness_loss(flow[i])
     p_loss = 1/n * gamma * p_loss
     c_loss = 1/n * zeta * c_loss

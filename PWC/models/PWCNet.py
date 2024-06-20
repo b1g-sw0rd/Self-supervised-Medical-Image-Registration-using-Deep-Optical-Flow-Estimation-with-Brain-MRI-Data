@@ -276,7 +276,7 @@ class PWCDCNet(nn.Module):
         if self.training:
             return flow0,flow1,flow2,flow3,flow4,flow5,flow6
         else:
-            return flow0
+            return flow0,flow1,flow2,flow3,flow4,flow5,flow6
 
 
 class PWCDCNet_old(nn.Module):

@@ -8,6 +8,7 @@ from loss import OFEloss
 import time
 from dataset import brain_dataset, volume2slices_ds
 from torch.utils.tensorboard import SummaryWriter
+from torch.optim.lr_scheduler import StepLR
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # 调用gpu计算如果可用，否则cpu
@@ -44,6 +45,7 @@ def epoch(model, data, criterion, optimizer=None, mode="TRAIN"):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            #scheduler.step()  # lr decay
 
         batch_time = time.time() - tic
         tic = time.time()
@@ -74,6 +76,7 @@ def epoch(model, data, criterion, optimizer=None, mode="TRAIN"):
         smooth=avg_smooth_loss, photo=avg_photo_loss, corr=avg_corr_loss))
 
     if mode == "TEST":
+        writer.add_images("original_img", fixed_img, e + 1)
         writer.add_images("warped_img", wraped_imgs[0], e+1)
 
     return avg_photo_loss.avg, avg_corr_loss.avg, avg_smooth_loss.avg, avg_loss.avg
@@ -84,11 +87,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', default="C:/OASIS1/RAW", type=str, metavar='DIR',
                         help='path to dataset')  # 修改
-    parser.add_argument('--model', default='flowNetS', type=str, help='the supervised model to be trained with ('
-                                                                     'flowNetS, lightflownet, pwc_net)')  # 修改
-    parser.add_argument('--epochs', default=200, type=int, metavar='N', help='number of epochs')
+    parser.add_argument('--model', default='pwc', type=str, help='the supervised model to be trained with ('
+                                                                     'flowNetS, flownet2, pwc, raft)')  # 修改
+    parser.add_argument('--epochs', default=200, type=int, metavar='E', help='number of epochs')
     parser.add_argument('--batch_size', default=24, type=int, metavar='N', help='mini-batch size')
-    parser.add_argument('--lr', default=1.6e-5, type=float, metavar='LR', help='learning rate')
+    parser.add_argument('--lrIni', default=1e-4, type=float, metavar='LRI', help='learning rate')
+    parser.add_argument('--lrMin', default=1e-4, type=float, metavar='LRM', help='learning rate')
     parser.add_argument('--cp', default=True, type=bool, metavar='CP', help='whether to use checkpoint state')
 
     args = parser.parse_args()
@@ -98,7 +102,10 @@ if __name__ == '__main__':
 
     path = os.path.join("Unsupervised", type(OFEmodel.predictor).__name__)
     loss_fnc = OFEloss
-    optim = torch.optim.Adam(OFEmodel.parameters(), args.lr, betas=(0.9, 0.999))
+    optim = torch.optim.Adam(OFEmodel.parameters(), args.lrIni, betas=(0.9, 0.999), eps=args.lrMin)
+    scheduler = StepLR(optim,
+                       step_size=20,  # Period of learning rate decay
+                       gamma=0.8)  # Multiplicative factor of learning rate decay
 
 
     # 准备数据
@@ -129,10 +136,11 @@ if __name__ == '__main__':
         starting_epoch = checkpoint['epoch'] + 1
         best_loss = checkpoint['best_loss']
 
+
     for e in range(starting_epoch, epochs):
         print("=================\n EPOCH " + str(e + 1) + "/" + str(epochs) + " \n=================\n")
-        # print("learning rate : ", optim.param_groups[0]["lr"])
-
+        print("learning rate : ", optim.param_groups[0]["lr"])
+        writer.add_scalar('lr', optim.param_groups[0]["lr"], e + 1)
         # train start
         photo_loss, corr_loss, smooth_loss, total_loss = epoch(OFEmodel, train_generator, loss_fnc, optim, mode="TRAIN")
 
