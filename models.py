@@ -2,14 +2,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import argparse
+import torchvision.transforms as transform
 import sys
+import matplotlib.pyplot as plt
 sys.path.append(r'C:\Users\13660\PycharmProjects\OFE-Reg\flownet2')
 sys.path.append(r'C:\Users\13660\PycharmProjects\OFE-Reg\PWC\models')
 sys.path.append(r'C:\Users\13660\PycharmProjects\OFE-Reg\RAFT\core')
-from utils import crop_like
+from utils import crop_like, grid_generator
 import flownet2.models as flownet2
 import RAFT.core.raft as raft
 import PWC.models.PWCNet as pwc
+import numpy as np
+from FlowNetS.FlowNetS import FlowNetS as flownets_pt
 from torch.nn.init import kaiming_normal_, constant_
 import time
 device = torch.device('cuda')
@@ -160,14 +164,31 @@ class affmodel(nn.Module):
         self.conv5 = conv_3d(128, 256, 3, 2)
         self.conv6 = conv_3d(256, 512, 3, 2)
         self.flat = nn.Flatten()
-        self.fc = nn.Linear(8 * 8 * 512, 12)
+        self.fc = nn.Linear(176 * 512, 12)
+
+    # def forward(self, x, seg):
+    #     b = x.size(0)
+    #     moving = x[:,1:,:,:,:]
+    #     m_seg = seg[:,1:,:,:,:]
+    #     para = self.fc(self.flat(self.conv6(self.conv5(self.conv4(self.conv3(self.conv2(self.conv1(x))))))))
+    #     para = para.view(b,3,4)
+    #     grid = F.affine_grid(para, moving.size())
+    #     transformed_img = F.grid_sample(moving, grid)
+    #     transformed_seg = F.grid_sample(m_seg, grid)
+    #
+    #
+    #     return para, transformed_img, transformed_seg
 
     def forward(self, x):
+        b = x.size(0)
+        moving = x[:,1:,:,:,:]
         para = self.fc(self.flat(self.conv6(self.conv5(self.conv4(self.conv3(self.conv2(self.conv1(x))))))))
-        grid = F.affine_grid(para, x.size())
-        out = F.grid_sample(x, grid)
+        para = para.view(b,3,4)
+        grid = F.affine_grid(para, moving.size())
+        transformed_img = F.grid_sample(moving, grid)
 
-        return out
+
+        return para, transformed_img
 
 
 # https://github.com/ily-R/Unsupervised-Optical-Flow/blob/master/models.py
@@ -185,85 +206,36 @@ def generate_grid(B, H, W, device):
 
 # https://github.com/ily-R/Unsupervised-Optical-Flow/blob/master/models.py
 class opticalFlowReg(nn.Module):
-    def __init__(self, conv_predictor="flowNetS"):
+    def __init__(self, conv_predictor="flownets"):
         super(opticalFlowReg, self).__init__()
         #  加入不同OpticalFlow模型
         if "flownet2" in conv_predictor:
             print('Using FlowNet2')
             parser = argparse.ArgumentParser()
-
-            parser.add_argument('--start_epoch', type=int, default=1)
-            parser.add_argument('--total_epochs', type=int, default=10000)
-            parser.add_argument('--batch_size', '-b', type=int, default=4, help="Batch size")
-            parser.add_argument('--train_n_batches', type=int, default=-1,
-                                help='Number of min-batches per epoch. If < 0, it will be determined by training_dataloader')
-            parser.add_argument('--crop_size', type=int, nargs='+', default=[256, 256],
-                                help="Spatial dimension to crop training samples for training")
             parser.add_argument('--gradient_clip', type=float, default=None)
-            parser.add_argument('--schedule_lr_frequency', type=int, default=0,
-                                help='in number of iterations (0 for no schedule)')
-            parser.add_argument('--schedule_lr_fraction', type=float, default=10)
             parser.add_argument("--rgb_max", type=float, default=255.)
-
             parser.add_argument('--number_workers', '-nw', '--num_workers', type=int, default=8)
             parser.add_argument('--number_gpus', '-ng', type=int, default=-1, help='number of GPUs to use')
             parser.add_argument('--no_cuda', action='store_true')
-
-            parser.add_argument('--seed', type=int, default=1)
-            parser.add_argument('--name', default='run', type=str, help='a name to append to the save directory')
-            parser.add_argument('--save', '-s', default='./work', type=str, help='directory for saving')
-
-            parser.add_argument('--validation_frequency', type=int, default=5, help='validate every n epochs')
-            parser.add_argument('--validation_n_batches', type=int, default=-1)
-            parser.add_argument('--render_validation', action='store_true',
-                                help='run inference (save flows to file) and every validation_frequency epoch')
-
-            parser.add_argument('--inference', action='store_true')
-            parser.add_argument('--inference_visualize', action='store_true',
-                                help="visualize the optical flow during inference")
-            parser.add_argument('--inference_size', type=int, nargs='+', default=[-1, -1],
-                                help='spatial size divisible by 64. default (-1,-1) - largest possible valid size would be used')
-            parser.add_argument('--inference_batch_size', type=int, default=1)
-            parser.add_argument('--inference_n_batches', type=int, default=-1)
-            parser.add_argument('--save_flow', action='store_true', help='save predicted flows to file')
-
-            parser.add_argument('--resume', default='', type=str, metavar='PATH',
-                                help='path to latest checkpoint (default: none)')
-            parser.add_argument('--log_frequency', '--summ_iter', type=int, default=1, help="Log every n batches")
-
-            parser.add_argument('--skip_training', action='store_true')
-            parser.add_argument('--skip_validation', action='store_true')
-
             parser.add_argument('--fp16', action='store_true',
                                 help='Run model in pseudo-fp16 mode (fp16 storage fp32 math).')
             parser.add_argument('--fp16_scale', type=float, default=1024.,
                                 help='Loss scaling, positive power of 2 values can improve fp16 convergence.')
             args = parser.parse_args()
-            self.predictor = flownet2.FlowNet2(args)
+            self.predictor = flownet2.FlowNet2(args,batchNorm=True)
 
         elif "raft" in conv_predictor:
             print('Using RAFT')
             parser = argparse.ArgumentParser()
-            parser.add_argument('--name', default='raft', help="name your experiment")
-            parser.add_argument('--stage', help="determines which dataset to use for training")
-            parser.add_argument('--restore_ckpt', help="restore checkpoint")
             parser.add_argument('--small', action='store_true', help='use small model')
-            parser.add_argument('--validation', type=str, nargs='+')
-
-            parser.add_argument('--lr', type=float, default=0.00002)
-            parser.add_argument('--num_steps', type=int, default=100000)
-            parser.add_argument('--batch_size', type=int, default=6)
-            parser.add_argument('--image_size', type=int, nargs='+', default=[384, 512])
             parser.add_argument('--gpus', type=int, nargs='+', default=[0, 1])
-            parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
-
-            parser.add_argument('--iters', type=int, default=12)
+            parser.add_argument('--iters', type=int, default=5)
             parser.add_argument('--wdecay', type=float, default=.00005)
-            parser.add_argument('--epsilon', type=float, default=1e-8)
+            parser.add_argument('--epsilon', type=float, default=1e-9)
             parser.add_argument('--clip', type=float, default=1.0)
             parser.add_argument('--dropout', type=float, default=0.0)
             parser.add_argument('--gamma', type=float, default=0.8, help='exponential weighting')
-            parser.add_argument('--add_noise', action='store_true')
+            parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
             args = parser.parse_args()
             self.predictor = raft.RAFT(args)
 
@@ -276,7 +248,9 @@ class opticalFlowReg(nn.Module):
             self.predictor.load_state_dict(pt, strict=False)  # 加载预训练权重
         else:
             print('Using FlowNetS')
-            self.predictor = flowNetS()
+            # self.predictor = flowNetS(batchNorm=True)
+            self.predictor = flownets_pt(batchNorm=True)
+
 
 
     def stn(self, flow, frame):
@@ -293,21 +267,48 @@ class opticalFlowReg(nn.Module):
 
         return warped_frame
 
-    def forward(self, x):
-
+    def forward(self, x, segs):
+    # def forward(self, x):
         flow_predictions = self.predictor(x)
         moving = x[:, 1, :, :]
         moving = torch.unsqueeze(moving, dim=1)
+        m_seg = segs[:, 1, :, :]
+        m_seg = torch.unsqueeze(m_seg, dim=1)
         warped_images = [self.stn(flow, moving) for flow in flow_predictions]
+        warped_segs = self.stn(flow_predictions[0], m_seg)
+        grid = grid_generator().view(1,1,256,256).to(device)
+
+        warped_grid = self.stn(flow_predictions[0], grid)
+        # warped_grid = 0
+
         #warped_images = self.stn(flow_predictions, moving)
-        return flow_predictions, warped_images
+        # warped_segs = np.clip(np.rint(warped_segs[0][0, 0, :, :].detach().cpu().numpy()),0,3)
+        warped_segs_int = torch.from_numpy(np.clip(np.rint(warped_segs.detach().cpu().numpy()),0,3)).to(device)
+        # warped_segs_int = 0
+
+        return flow_predictions, warped_images , warped_segs_int, warped_grid
 
 
 if __name__ == '__main__':
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    model_test = opticalFlowReg(conv_predictor="pwc")
-    model_test.to(device)
-    test_batch = torch.rand(8, 2, 256, 256).to(device)
-    output = model_test(test_batch)
+    # device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    # model_test = opticalFlowReg(conv_predictor="pwc")
+    # model_test.to(device)
+    # test_batch = torch.rand(8, 2, 256, 256).to(device)
+    # output = model_test(test_batch)
+    #
+    # print(type(output))
 
-    print(type(output))
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    model_test = flownets_pt(batchNorm=True)
+    model_test.to(device)
+    pt = torch.load(r"C:\Users\13660\PycharmProjects\OFE-Reg\FlowNetS\flownets_bn_EPE2.459.pth.tar", map_location=device)
+    weight = pt['state_dict']['conv1.0.weight']
+    sum1 = weight[:, :3, :, :].sum(dim=1, keepdim=True)
+    sum2 = weight[:, 3:, :, :].sum(dim=1, keepdim=True)
+    new_weight = torch.cat([sum1, sum2], dim=1)
+    pt['state_dict']['conv1.0.weight'] = new_weight
+    model_test.load_state_dict(pt, strict=False)
+    test_batch = torch.rand(8, 2,256, 256).to(device)
+    output = model_test(test_batch)
+    output=F.interpolate(output[0],size=(256,256),mode='bilinear')
+    print(output.size())
